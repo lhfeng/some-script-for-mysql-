@@ -1,0 +1,397 @@
+<?php
+
+error_reporting(0);
+
+//默认主机名
+define('DEFAULT_HOST', '127.0.0.1');
+
+//默认用户名
+define('DEFAULT_USER_NAME', 'root');
+
+//默认密码
+define('DEFAULT_PASSWORD', '');
+
+//默认端口
+define('DEFAULT_PORT', '3306');
+
+
+class TerminalOutputHelper
+{
+    protected $argvs = [];
+
+    public function __construct()
+    {
+        $argvs = $_SERVER['argv'];
+
+        array_shift($argvs);
+
+        $this->setArgvs($argvs);
+    }
+
+    /**
+     * 设置参数
+     *
+     * @param $argvs
+     */
+    protected function setArgvs($argvs)
+    {
+        $reg = '/--([a-z0-9-_]+)(=(.*))?/iu';
+
+        foreach ($argvs AS $argv)
+        {
+            if (preg_match($reg, $argv, $arr))
+            {
+                $this->argvs[$arr[1]] = isset($arr[3]) ? $arr[3] : TRUE;
+            }
+        }
+    }
+
+    /**
+     * 获取参数
+     *
+     * @return array
+     */
+    public function getArgvs()
+    {
+        return $this->argvs;
+    }
+
+    /**
+     * 格式化输出
+     *
+     * @param $data
+     */
+    public function format($data)
+    {
+        if (isset($this->argvs['column']))
+        {
+            $this->echoColumns($data);
+        }
+        else
+        {
+            $this->echoTable($data);
+        }
+    }
+
+    /**
+     * table 格式显示
+     *
+     * @param $data
+     */
+    public function echoTable($data)
+    {
+        $headerData = $header = [];
+
+        $keys = array_keys($data[0]);
+
+        foreach ($keys AS $key)
+        {
+            $headerData[$key] = [
+                'field' => $key,
+                'len'   => strlen($key),
+            ];
+
+            $header[$key] = $key;
+        }
+
+        array_walk_recursive($data, function (&$val, $key) use (&$headerData)
+        {
+            if (strlen($val) > $headerData[$key]['len'])
+            {
+                $headerData[$key]['len'] = strlen($val);
+            }
+        });
+
+        array_walk($headerData, function (&$v)
+        {
+            $v['len'] += 2;
+        });
+
+        $table = function ($row, $key, $count) use ($headerData)
+        {
+            $str = $str1 = '';
+
+            foreach ($row AS $k => $v)
+            {
+                $str .= '+' . str_repeat('-', $headerData[$k]['len']);
+            }
+
+            $str .= "+\n";
+
+            foreach ($row AS $k => $v)
+            {
+                $tmp = '| ' . $v . ' ';
+
+                $tmpLen = strlen($tmp) - 1;
+
+                $tmp .= $headerData[$k]['len'] > $tmpLen ? str_repeat(' ', ($headerData[$k]['len'] - $tmpLen)) : '';
+
+                $str1 .= $tmp;
+            }
+
+            $str = $str . $str1 . "|\n";
+
+            if ($key == ($count - 1))
+            {
+                foreach ($row AS $k => $v)
+                {
+                    $str .= '+' . str_repeat('-', $headerData[$k]['len']);
+                }
+
+                $str .= "+\n";
+            }
+
+            echo $str;
+        };
+
+        array_unshift($data, $header);
+
+        array_walk($data, $table, count($data));
+    }
+
+    /**
+     * 按列的方式进行输出
+     */
+    public function echoColumns($data)
+    {
+        $maxLen = max(array_map('strlen', array_keys($data[0])));
+
+        array_walk_recursive($data, function ($v, $k) use ($maxLen)
+        {
+            echo '    ' . str_repeat(' ', $maxLen - strlen($k)) . "{$k} : {$v}\n";
+        });
+    }
+}
+
+class MysqlReplicationMonitorForPHP
+{
+    /**
+     * @var Mysqli
+     */
+    protected $mysql = NULL;
+
+    protected $monitorData = [];
+
+    protected $status;
+
+    protected $wrap = "\n";
+
+    /**
+     * @var TerminalOutputHelper
+     */
+    protected $terminalOutputHelper;
+
+    public function __construct(TerminalOutputHelper $terminalOutputHelper)
+    {
+        $this->terminalOutputHelper = $terminalOutputHelper;
+
+        if (isset($this->terminalOutputHelper->getArgvs()['help']))
+        {
+            $this->showHelp();
+
+            die;
+        }
+
+        $this->connectDb();
+    }
+
+    /**
+     * 展示help信息
+     */
+    protected function showHelp()
+    {
+        $helpInfo = [
+            '--help'     => 'this help',
+            '--host'     => 'host for login in MySQL, defalut "127.0.0.1"',
+            '--user'     => 'user for login in MySQL, default "root"',
+            '--password' => 'password for login in MySQL, default ""',
+            '--port'     => 'port for login in MySQL, default "3306"',
+            '--column'   => 'output by column style',
+        ];
+
+        echo "\nUsage: ./mysqlReplicationMonitorForPHP [--help] [--host=localhost] [--user=root] [-password=pwd] [--port=3306] [--column]";
+
+        echo "\n\n You can edit default MySQL config in file, where that\n
+            define('DEFAULT_HOST', '127.0.0.1'); //默认主机名\n
+            define('DEFAULT_USER_NAME', 'root'); //默认用户名\n  
+            define('DEFAULT_PASSWORD', ''); //默认密码\n
+            define('DEFAULT_PORT', '3306'); //默认端口";
+
+        //echo ""
+
+        echo "\n\nOptions:\n";
+
+        $this->terminalOutputHelper->echoColumns([$helpInfo]);
+    }
+
+    /**
+     * 连接DB
+     */
+    protected function connectDb()
+    {
+        $config = $this->getDbConfig();
+
+        $this->mysql = new mysqli($config['host'], $config['user'], $config['password'], '', intval($config['port']));
+
+        if ($this->mysql->connect_error)
+        {
+            echo $this->wrap . 'Connect Error:' . $this->wrap;
+
+            $output = [
+                'Host'   => $config['host'],
+                'User'   => $config['user'],
+                'Port'   => $config['port'],
+                'ErrNo'  => $this->mysql->connect_errno,
+                'ErrStr' => $this->mysql->connect_error,
+            ];
+
+            $this->terminalOutputHelper->format([$output]);
+
+            $this->showHelp();
+            
+            die;
+        }
+    }
+
+    /**
+     * 获取mysql的配置
+     *
+     * @return array
+     */
+    protected function getDbConfig()
+    {
+        $config = [
+            'host'     => DEFAULT_HOST,
+            'user'     => DEFAULT_USER_NAME,
+            'password' => DEFAULT_PASSWORD,
+            'port'     => DEFAULT_PORT,
+        ];
+
+        $argvs = $this->terminalOutputHelper->getArgvs();
+
+        array_walk($argvs, function ($v, $k) use (&$config)
+        {
+
+            isset($config[$k]) && $config[$k] = $v;
+        });
+
+        return $config;
+    }
+
+
+    public function monitor()
+    {
+        $rs = $this->mysql->query('show slave status');
+
+        $this->monitorData = $rs->fetch_assoc();
+
+        if (empty($this->monitorData))
+        {
+            echo 'Replication Error, Please Run "show slave status\G" In Mysql Client' . $this->wrap;
+
+            $this->showHelp();
+            
+            die;
+        }
+
+        $this->showMasterInfo();
+
+        $this->showReplicationInfo();
+
+        $this->showErrorInfo();
+    }
+
+    /**
+     * 显示错误信息
+     *
+     * @return bool
+     */
+    protected function showErrorInfo()
+    {
+        if ($this->status)
+        {
+            return TRUE;
+        }
+
+        if ($this->monitorData['Last_IO_Errno'] != 0 || !empty($this->monitorData['Last_IO_Error']))
+        {
+            echo $this->wrap . "IO Thread Error:" . $this->wrap;
+
+            $info = [
+                'ErrNo'  => $this->monitorData['Last_IO_Errno'],
+                'ErrStr' => $this->monitorData['Last_IO_Error'],
+            ];
+
+            $this->terminalOutputHelper->format([$info]);
+        }
+
+        if ($this->monitorData['Last_SQL_Errno'] != 0 || !empty($this->monitorData['Last_SQL_Error']))
+        {
+            echo $this->wrap . "SQL Thread Error:" . $this->wrap;
+
+            $info = [
+                'ErrNo'  => $this->monitorData['Last_SQL_Errno'],
+                'ErrStr' => $this->monitorData['Last_SQL_Error'],
+            ];
+
+            $this->terminalOutputHelper->format([$info]);
+        }
+    }
+
+    /**
+     * 显示主从同步状态信息
+     */
+    protected function showReplicationInfo()
+    {
+        echo $this->wrap . "Replication Status:" . $this->wrap;
+
+        $replicationInfo = [];
+
+        if ($this->monitorData['Slave_IO_Running'] == 'Yes' && $this->monitorData['Slave_SQL_Running'] == 'Yes')
+        {
+            $replicationInfo['Status'] = 'OK';
+
+            $replicationInfo['Seconds_Behind_Master'] = $this->monitorData['Seconds_Behind_Master'];
+
+            $this->status = TRUE;
+        }
+        else
+        {
+            $replicationInfo['Status'] = 'Fail';
+
+            $replicationInfo['Slave_IO_Running'] = $this->monitorData['Slave_IO_Running'];
+
+            $replicationInfo['Slave_SQL_Running'] = $this->monitorData['Slave_SQL_Running'];
+
+            $this->status = FALSE;
+        }
+
+        $this->terminalOutputHelper->format([$replicationInfo]);
+    }
+
+    /**
+     * 显示master信息
+     */
+    protected function showMasterInfo()
+    {
+        echo "Master Info:" . $this->wrap;
+
+        $masterInfo = [
+            [
+                'Master_Host'     => $this->monitorData['Master_Host'],
+                'Master_User'     => $this->monitorData['Master_User'],
+                'Master_Port'     => $this->monitorData['Master_Port'],
+                'Master_Log_File' => $this->monitorData['Master_Log_File'],
+                'Master_Log_Pos'  => $this->monitorData['Read_Master_Log_Pos'],
+            ],
+        ];
+
+        $this->terminalOutputHelper->format($masterInfo);
+    }
+
+
+}
+
+$monitor = new MysqlReplicationMonitorForPHP(new TerminalOutputHelper());
+
+$monitor->monitor();
